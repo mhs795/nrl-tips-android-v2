@@ -137,20 +137,28 @@ _SCRIPT_FILES = [
 ]
 
 def _init_data():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    for fname in _DATA_FILES:
-        src = os.path.join(BUNDLE_DIR, fname)
-        dst = os.path.join(DATA_DIR, fname)
-        if os.path.exists(src) and not os.path.exists(dst):
-            shutil.copy(src, dst)
-    # Scripts are always refreshed
-    for fname in _SCRIPT_FILES:
-        src = os.path.join(BUNDLE_DIR, fname)
-        dst = os.path.join(DATA_DIR, fname)
-        if os.path.exists(src):
-            shutil.copy(src, dst)
-    if DATA_DIR not in sys.path:
-        sys.path.insert(0, DATA_DIR)
+    global DATA_DIR
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        for fname in _DATA_FILES:
+            src = os.path.join(BUNDLE_DIR, fname)
+            dst = os.path.join(DATA_DIR, fname)
+            if os.path.exists(src) and not os.path.exists(dst):
+                shutil.copy(src, dst)
+        # Scripts are always refreshed
+        for fname in _SCRIPT_FILES:
+            src = os.path.join(BUNDLE_DIR, fname)
+            dst = os.path.join(DATA_DIR, fname)
+            if os.path.exists(src):
+                # On Android, we might not be able to overwrite if the app is running
+                try:
+                    shutil.copy(src, dst)
+                except Exception:
+                    pass
+        if DATA_DIR not in sys.path:
+            sys.path.insert(0, DATA_DIR)
+    except Exception as e:
+        print(f"Data init error: {e}")
 
 # ── UI Components ─────────────────────────────────────────────────────────────
 
@@ -339,25 +347,39 @@ class OutputScreen(Screen):
 class NRLTipsApp(App):
     def build(self):
         global DATA_DIR
-        if platform == 'android':
-            from android.storage import app_storage_path # type: ignore
-            DATA_DIR = app_storage_path()
-        _init_data()
-        
-        self.sm = ScreenManager(transition=SlideTransition())
-        self.home = HomeScreen(self, name='home')
-        self.tips = TipsScreen(self, name='tips')
-        self.output = OutputScreen(self, name='output')
-        
-        self.sm.add_widget(self.home)
-        self.sm.add_widget(self.tips)
-        self.sm.add_widget(self.output)
-        
-        self._q = queue.Queue()
-        self._running = False
-        Clock.schedule_interval(self._pump, 0.1)
-        
-        return self.sm
+        try:
+            if platform == 'android':
+                from android.storage import app_storage_path # type: ignore
+                DATA_DIR = app_storage_path()
+            _init_data()
+            
+            self.sm = ScreenManager(transition=SlideTransition())
+            self.home = HomeScreen(self, name='home')
+            self.tips = TipsScreen(self, name='tips')
+            self.output = OutputScreen(self, name='output')
+            
+            self.sm.add_widget(self.home)
+            self.sm.add_widget(self.tips)
+            self.sm.add_widget(self.output)
+            
+            self._q = queue.Queue()
+            self._running = False
+            Clock.schedule_interval(self._pump, 0.1)
+            
+            return self.sm
+        except Exception as e:
+            import traceback
+            err_box = BoxLayout(orientation='vertical', padding=dp(20))
+            err_box.add_widget(Label(text="[b]Startup Crash[/b]", markup=True, font_size=dp(24), color=(1,0,0,1)))
+            
+            sv = ScrollView()
+            lbl = Label(text=traceback.format_exc(), font_size=dp(12), color=(1,1,1,1),
+                        valign='top', halign='left', size_hint_y=None)
+            lbl.bind(width=lambda w,v: setattr(w, 'text_size', (v, None)),
+                     texture_size=lambda w,v: setattr(w, 'height', v[1]))
+            sv.add_widget(lbl)
+            err_box.add_widget(sv)
+            return err_box
 
     def go_home(self):
         self.sm.transition.direction = 'right'

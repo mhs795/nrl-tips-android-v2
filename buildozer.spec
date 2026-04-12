@@ -11,11 +11,11 @@ version = 1.0.1
 version.numeric = 101
 
 
-requirements = python3,kivy==2.3.0,pandas,numpy,requests,charset-normalizer,beautifulsoup4,openpyxl,et_xmlfile
+requirements = python3,kivy==2.3.0,pandas,numpy,requests,charset-normalizer,beautifulsoup4,openpyxl,et_xmlfile,certifi
 
 orientation = portrait
 fullscreen = 0
-android.permissions = INTERNET
+android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 android.api = 34
 android.minapi = 21
 android.ndk = 25b
