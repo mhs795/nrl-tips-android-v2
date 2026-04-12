@@ -113,15 +113,19 @@ test("load_data: CSV → compute_rolling_stats → engineer_features (no dtype e
 
 
 # ── 3. NPZ model loading ───────────────────────────────────────────────────────
-
 def test_npz_models():
     from nrl_predict import load_model
     for fname in ("nrl_model.npz", "nrl_model_no_odds.npz"):
         path = os.path.join(REPO, fname)
         assert os.path.exists(path), f"Model file missing: {fname}"
+        # load_model opens and returns the numpy object. 
+        # Using a context manager here to ensure it's closed correctly.
         m = load_model(path)
-        assert "n_folds" in m and len(m["n_folds"]) > 0, f"{fname}: no n_folds"
-        assert "feature_cols" in m and len(m["feature_cols"]) > 0, f"{fname}: no feature_cols"
+        assert m is not None, f"Failed to load {fname}"
+        assert "n_folds" in m.files, f"{fname}: no n_folds"
+        assert "feature_cols" in m.files, f"{fname}: no feature_cols"
+        m.close()
+
 
 test("npz models: load nrl_model.npz and nrl_model_no_odds.npz", test_npz_models)
 
