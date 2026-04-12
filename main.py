@@ -134,7 +134,7 @@ _DATA_FILES = [
 _SCRIPT_FILES = [
     's1_history.py', 's2_stats.py', 's3_weather.py',
     's4_squads.py',  's5_odds.py',  's6_tips.py',
-    's9_performance.py', 'm5_nrl.py',
+    's9_performance.py', 'm5_nrl.py', 'collect_data.py',
     'u1_travel.py',  'u2_weather.py', 'u3_squad.py',
 ]
 
@@ -402,9 +402,40 @@ class NRLTipsApp(App):
         Window.clearcolor = BG_C
 
     def show_settings(self, *_):
-        p = Popup(title="Settings", size_hint=(0.8, 0.4))
-        p.content = Label(text="Settings coming soon...")
-        p.open()
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(10))
+        
+        # Load current key
+        current_key = ""
+        settings_path = os.path.join(DATA_DIR, 'android_settings.json')
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path) as f:
+                    s = json.load(f)
+                    current_key = s.get('ODDS_API_KEY', '')
+            except: pass
+
+        content.add_widget(Label(text="ODDS API Key", color=WHITE_C, size_hint_y=None, height=dp(28)))
+        key_inp = TextInput(text=current_key, multiline=False, password=True, size_hint_y=None, height=dp(48),
+                            background_color=_rgba(ACCENT_HEX), foreground_color=WHITE_C)
+        content.add_widget(key_inp)
+        
+        save_btn = Button(text="Save", size_hint_y=None, height=dp(48), background_color=GREEN_C, background_normal='')
+        content.add_widget(save_btn)
+
+        popup = Popup(title="Settings", content=content, size_hint=(0.9, None), height=dp(250))
+
+        def _save(*_):
+            d = {}
+            if os.path.exists(settings_path):
+                try:
+                    with open(settings_path) as f: d = json.load(f)
+                except: pass
+            d['ODDS_API_KEY'] = key_inp.text.strip()
+            with open(settings_path, 'w') as f: json.dump(d, f)
+            popup.dismiss()
+
+        save_btn.bind(on_press=_save)
+        popup.open()
 
     def run_action(self, action):
         rnd = self.tips.round_input.text.strip()
@@ -422,9 +453,20 @@ class NRLTipsApp(App):
         elif action == "compare":
             self._start_worker("Comparing models...", lambda: self._exec('s9_performance.py', ["--compare"] + args))
         elif action == "collect_new":
-            self._start_worker("Collecting data...", lambda: self._exec('s1_history.py', ["--new-only"]))
+            self._start_worker("Collecting data...", lambda: self._exec('collect_data.py', []))
         elif action == "model_info":
             self._show_model_info()
+        elif action == "clear":
+            self._clear_cache()
+
+    def _clear_cache(self):
+        import glob
+        files = glob.glob(os.path.join(DATA_DIR, "tips_cache_*.txt"))
+        for f in files:
+            try: os.remove(f)
+            except: pass
+        self.output.out_lbl.text = f"Cleared {len(files)} cache files.\n"
+        self.output.status_lbl.text = "Done"
 
     def _start_worker(self, status, fn):
         if self._running: return
@@ -432,22 +474,56 @@ class NRLTipsApp(App):
         self.output.status_lbl.text = status
         
         def _wrap():
-            sys.stdout = _Pipe(self._q, 'out')
-            sys.stderr = _Pipe(self._q, 'err')
             try: fn()
-            except Exception as e: self._q.put(('err', str(e)))
+            except Exception as e: 
+                import traceback
+                self._q.put(('err', f"Worker error: {e}\n{traceback.format_exc()}"))
             finally:
-                sys.stdout = sys.__stdout__
-                sys.stderr = sys.__stderr__
                 self._q.put(('done', 0))
         threading.Thread(target=_wrap, daemon=True).start()
 
     def _exec(self, script, args):
-        path = os.path.join(DATA_DIR, script)
-        old_argv = sys.argv
-        sys.argv = [path] + args
-        try: runpy.run_path(path, run_name='__main__')
-        finally: sys.argv = old_argv
+        """Run a backend script via subprocess inside the worker thread."""
+        import subprocess
+        script_path = os.path.join(DATA_DIR, script)
+        if not os.path.exists(script_path):
+            script_path = os.path.join(BUNDLE_DIR, script)
+            
+        if not os.path.exists(script_path):
+            self._q.put(('err', f"Script not found: {script}"))
+            return
+
+        cmd = [sys.executable, script_path] + list(args)
+        
+        env = os.environ.copy()
+        env["PYTHONPATH"] = f"{DATA_DIR}:{BUNDLE_DIR}:{env.get('PYTHONPATH', '')}"
+        # Ensure script output isn't buffered
+        env["PYTHONUNBUFFERED"] = "1"
+        
+        # Load API key from settings if available
+        try:
+            settings_path = os.path.join(DATA_DIR, 'android_settings.json')
+            if os.path.exists(settings_path):
+                with open(settings_path) as f:
+                    s = json.load(f)
+                    if s.get('ODDS_API_KEY'):
+                        env['ODDS_API_KEY'] = s['ODDS_API_KEY']
+        except: pass
+
+        try:
+            self.proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cwd=DATA_DIR, env=env, text=True, bufsize=1
+            )
+            
+            for line in self.proc.stdout:
+                if line.strip():
+                    self._q.put(('out', line.strip()))
+            
+            self.proc.wait()
+        except Exception as e:
+            import traceback
+            self._q.put(('err', f"Subprocess error: {e}\n{traceback.format_exc()}"))
 
     def _pump(self, _):
         while not self._q.empty():
@@ -456,9 +532,25 @@ class NRLTipsApp(App):
                 self._running = False
                 self.output.status_lbl.text = "Done"
             elif kind == 'out':
-                self.output.out_lbl.text += text + "\n"
+                if text:
+                    self._append_formatted(text)
             elif kind == 'err':
-                self.output.out_lbl.text += f"[color={RED_HEX}]{text}[/color]\n"
+                if text:
+                    self.output.out_lbl.text += f"[color={RED_HEX}]{text}[/color]\n"
+
+    def _append_formatted(self, line):
+        s = line.strip()
+        # Basic classification for color coding similar to classifying in web_gui
+        if s.startswith("▶") or s.startswith("TIP:"):
+            self.output.out_lbl.text += f"[color={GREEN_HEX}][b]{line}[/b][/color]\n"
+        elif s.startswith("⚠") or "⚡" in s:
+            self.output.out_lbl.text += f"[color={YELLOW_HEX}]{line}[/color]\n"
+        elif s.startswith("Round ") or s.startswith("==="):
+            self.output.out_lbl.text += f"\n[b]{line}[/b]\n"
+        elif "error" in s.lower() or s.startswith("[!]"):
+            self.output.out_lbl.text += f"[color={RED_HEX}][b]{line}[/b][/color]\n"
+        else:
+            self.output.out_lbl.text += f"{line}\n"
 
     def cancel_action(self, *_):
         if self._running:
@@ -466,8 +558,29 @@ class NRLTipsApp(App):
             self.output.out_lbl.text += "\n[color=ff0000]Cancelled[/color]\n"
 
     def _show_model_info(self):
-        # Implementation of model info display
-        self.output.out_lbl.text = "Model Info display logic..."
+        self.output.out_lbl.text = ""
+        for path, label in [
+            (os.path.join(DATA_DIR, 'nrl_model_info.json'),        "With Odds"),
+            (os.path.join(DATA_DIR, 'nrl_model_no_odds_info.json'), "No Odds"),
+        ]:
+            if not os.path.exists(path):
+                self.output.out_lbl.text += f"[color={YELLOW_HEX}][{label}][/color] No model info found.\n\n"
+                continue
+            try:
+                with open(path) as f:
+                    d = json.load(f)
+                self.output.out_lbl.text += f"[b][color={YELLOW_HEX}]=== {label} ===[/color][/b]\n"
+                self.output.out_lbl.text += f"  CV acc:    {d['cv_accuracy']:.3f} ± {d['cv_std']:.3f}\n"
+                self.output.out_lbl.text += f"  Train acc: {d['train_accuracy']:.3f}\n"
+                self.output.out_lbl.text += f"  Brier:     {d['brier_score']:.4f}\n"
+                self.output.out_lbl.text += "  Top features:\n"
+                for feat in d.get("features", [])[:8]:
+                    filled = int(feat["importance"] * 20)
+                    bar = "█" * filled + "░" * (20 - filled)
+                    self.output.out_lbl.text += f"  {feat['name'][:20]:<20} {bar}\n"
+                self.output.out_lbl.text += "\n"
+            except Exception as e:
+                self.output.out_lbl.text += f"Error loading {label}: {e}\n"
         self.output.status_lbl.text = "Done"
 
 class _Pipe:

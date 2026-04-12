@@ -3,7 +3,7 @@ title = NRL Tips
 package.name = nrltips
 package.domain = org.nrltips
 source.dir = .
-source.include_exts = py,csv,json,xlsx,png,npz,txt
+source.include_exts = py,csv,json,xlsx,png,npz,txt,pyc
 icon.filename = %(source.dir)s/icon.png
 # (str) Full version
 version = 1.0.1
