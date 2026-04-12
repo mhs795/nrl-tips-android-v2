@@ -1,0 +1,69 @@
+{
+  "trained_at": "2026-04-10 22:50",
+  "cv_accuracy": 0.624,
+  "cv_std": 0.016,
+  "train_accuracy": 0.972,
+  "brier_score": 0.0949,
+  "features": [
+    {
+      "name": "pts_against_diff",
+      "importance": 0.0706
+    },
+    {
+      "name": "pts_diff_diff",
+      "importance": 0.055
+    },
+    {
+      "name": "h2h_pts_diff",
+      "importance": 0.0428
+    },
+    {
+      "name": "pts_for_diff",
+      "importance": 0.0383
+    },
+    {
+      "name": "travel_diff",
+      "importance": 0.03
+    },
+    {
+      "name": "kick_metres_diff",
+      "importance": 0.0292
+    },
+    {
+      "name": "home_tackle_eff",
+      "importance": 0.0281
+    },
+    {
+      "name": "home_completion_rate",
+      "importance": 0.0278
+    },
+    {
+      "name": "away_season_winrate",
+      "importance": 0.0265
+    },
+    {
+      "name": "penalties_diff",
+      "importance": 0.0265
+    },
+    {
+      "name": "post_contact_diff",
+      "importance": 0.0261
+    },
+    {
+      "name": "completion_diff",
+      "importance": 0.026
+    },
+    {
+      "name": "ladder_diff",
+      "importance": 0.0251
+    },
+    {
+      "name": "season_winrate_diff",
+      "importance": 0.0251
+    },
+    {
+      "name": "away_tackle_eff",
+      "importance": 0.0245
+    }
+  ]
+}

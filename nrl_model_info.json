@@ -1,0 +1,69 @@
+{
+  "trained_at": "2026-04-10 22:49",
+  "cv_accuracy": 0.6632,
+  "cv_std": 0.0228,
+  "train_accuracy": 0.9736,
+  "brier_score": 0.085,
+  "features": [
+    {
+      "name": "market_home_implied_prob",
+      "importance": 0.0655
+    },
+    {
+      "name": "market_handicap",
+      "importance": 0.0638
+    },
+    {
+      "name": "pts_against_diff",
+      "importance": 0.0512
+    },
+    {
+      "name": "pts_diff_diff",
+      "importance": 0.0349
+    },
+    {
+      "name": "odds_move",
+      "importance": 0.0348
+    },
+    {
+      "name": "h2h_pts_diff",
+      "importance": 0.0329
+    },
+    {
+      "name": "season_winrate_diff",
+      "importance": 0.0287
+    },
+    {
+      "name": "home_completion_rate",
+      "importance": 0.0263
+    },
+    {
+      "name": "pts_for_diff",
+      "importance": 0.0258
+    },
+    {
+      "name": "post_contact_diff",
+      "importance": 0.0257
+    },
+    {
+      "name": "travel_diff",
+      "importance": 0.0256
+    },
+    {
+      "name": "completion_diff",
+      "importance": 0.0238
+    },
+    {
+      "name": "momentum_diff",
+      "importance": 0.0234
+    },
+    {
+      "name": "tackle_eff_diff",
+      "importance": 0.0226
+    },
+    {
+      "name": "kick_metres_diff",
+      "importance": 0.0225
+    }
+  ]
+}
