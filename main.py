@@ -68,7 +68,7 @@ _CURRENT_THEME = 'dark'
 def _rgba(h):
     return int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255, 1
 
-BG_C = PANEL_C = ACCENT_C = GREEN_C = WHITE_C = GREY_C = (0, 0, 0, 1)
+BG_C = PANEL_C = ACCENT_C = GREEN_C = YELLOW_C = RED_C = WHITE_C = GREY_C = (0, 0, 0, 1)
 BG_HEX = PANEL_HEX = ACCENT_HEX = OUTPUT_HEX = "000000"
 GREEN_HEX = YELLOW_HEX = RED_HEX = WHITE_HEX = GREY_HEX = "ffffff"
 
@@ -76,7 +76,7 @@ def _set_theme(name: str):
     global _CURRENT_THEME
     global BG_HEX, PANEL_HEX, ACCENT_HEX, OUTPUT_HEX
     global GREEN_HEX, YELLOW_HEX, RED_HEX, WHITE_HEX, GREY_HEX
-    global BG_C, PANEL_C, ACCENT_C, GREEN_C, WHITE_C, GREY_C
+    global BG_C, PANEL_C, ACCENT_C, GREEN_C, YELLOW_C, RED_C, WHITE_C, GREY_C
     _CURRENT_THEME = name
     t = THEMES[name]
     BG_HEX     = t['BG'];     PANEL_HEX  = t['PANEL']
@@ -88,6 +88,8 @@ def _set_theme(name: str):
     PANEL_C  = _rgba(PANEL_HEX)
     ACCENT_C = _rgba(ACCENT_HEX)
     GREEN_C  = _rgba(GREEN_HEX)
+    YELLOW_C = _rgba(YELLOW_HEX)
+    RED_C    = _rgba(RED_HEX)
     WHITE_C  = _rgba(WHITE_HEX)
     GREY_C   = _rgba(GREY_HEX)
 
