@@ -135,28 +135,32 @@ _SCRIPT_FILES = [
     's1_history.py', 's2_stats.py', 's3_weather.py',
     's4_squads.py',  's5_odds.py',  's6_tips.py',
     's9_performance.py', 'm5_nrl.py', 'collect_data.py',
-    'u1_travel.py',  'u2_weather.py', 'u3_squad.py',
+    'u1_travel.py',  'u2_weather.py', 'u3_squad.py', 'nrl_predict.py',
 ]
 
 def _init_data():
     global DATA_DIR
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
+        # Copy data files
         for fname in _DATA_FILES:
             src = os.path.join(BUNDLE_DIR, fname)
             dst = os.path.join(DATA_DIR, fname)
             if os.path.exists(src) and not os.path.exists(dst):
-                shutil.copy(src, dst)
-        # Scripts are always refreshed
+                try: shutil.copy(src, dst)
+                except: pass
+        
+        # Copy scripts (prefer .py, but handle .pyc)
         for fname in _SCRIPT_FILES:
-            src = os.path.join(BUNDLE_DIR, fname)
-            dst = os.path.join(DATA_DIR, fname)
-            if os.path.exists(src):
-                # On Android, we might not be able to overwrite if the app is running
-                try:
-                    shutil.copy(src, dst)
-                except Exception:
-                    pass
+            base = fname[:-3]
+            for ext in ['.py', '.pyc']:
+                f = base + ext
+                src = os.path.join(BUNDLE_DIR, f)
+                dst = os.path.join(DATA_DIR, f)
+                if os.path.exists(src):
+                    try: shutil.copy(src, dst)
+                    except: pass
+                    
         if DATA_DIR not in sys.path:
             sys.path.insert(0, DATA_DIR)
     except Exception as e:
@@ -257,7 +261,6 @@ class HomeScreen(Screen):
         self.refresh_stats()
 
     def refresh_stats(self):
-        # In a real app, parse nrl_model_info.json and nrl_source_data.csv
         try:
             path = os.path.join(DATA_DIR, 'nrl_model_info.json')
             if os.path.exists(path):
@@ -325,7 +328,12 @@ class OutputScreen(Screen):
         nav.add_widget(back)
         self.title_lbl = Label(text="Output", font_size=dp(18), bold=True, color=WHITE_C)
         nav.add_widget(self.title_lbl)
-        self.cancel_btn = RoundedButton(text="Stop", btn_color=_rgba(RED_HEX), color=WHITE_C, size_hint=(None, 0.8), width=dp(80), pos_hint={'center_y': 0.5})
+        
+        clr_btn = Button(text="Clear", font_size=dp(14), size_hint=(None, 0.7), width=dp(60), pos_hint={'center_y': 0.5})
+        clr_btn.bind(on_press=lambda *_: setattr(self.out_lbl, 'text', ""))
+        nav.add_widget(clr_btn)
+        
+        self.cancel_btn = RoundedButton(text="Stop", btn_color=_rgba(RED_HEX), color=WHITE_C, size_hint=(None, 0.8), width=dp(70), pos_hint={'center_y': 0.5})
         self.cancel_btn.bind(on_press=app.cancel_action)
         nav.add_widget(self.cancel_btn)
         layout.add_widget(nav)
@@ -373,12 +381,9 @@ class NRLTipsApp(App):
             import traceback
             err_box = BoxLayout(orientation='vertical', padding=dp(20))
             err_box.add_widget(Label(text="[b]Startup Crash[/b]", markup=True, font_size=dp(24), color=(1,0,0,1)))
-            
             sv = ScrollView()
-            lbl = Label(text=traceback.format_exc(), font_size=dp(12), color=(1,1,1,1),
-                        valign='top', halign='left', size_hint_y=None)
-            lbl.bind(width=lambda w,v: setattr(w, 'text_size', (v, None)),
-                     texture_size=lambda w,v: setattr(w, 'height', v[1]))
+            lbl = Label(text=traceback.format_exc(), font_size=dp(12), color=(1,1,1,1), valign='top', halign='left', size_hint_y=None)
+            lbl.bind(width=lambda w,v: setattr(w, 'text_size', (v, None)), texture_size=lambda w,v: setattr(w, 'height', v[1]))
             sv.add_widget(lbl)
             err_box.add_widget(sv)
             return err_box
@@ -398,13 +403,10 @@ class NRLTipsApp(App):
     def toggle_theme(self, *_):
         new = 'light' if _CURRENT_THEME == 'dark' else 'dark'
         _set_theme(new)
-        # In a real app, we'd rebuild or update colors. For now, let's keep it simple.
         Window.clearcolor = BG_C
 
     def show_settings(self, *_):
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(10))
-        
-        # Load current key
         current_key = ""
         settings_path = os.path.join(DATA_DIR, 'android_settings.json')
         if os.path.exists(settings_path):
@@ -413,17 +415,12 @@ class NRLTipsApp(App):
                     s = json.load(f)
                     current_key = s.get('ODDS_API_KEY', '')
             except: pass
-
         content.add_widget(Label(text="ODDS API Key", color=WHITE_C, size_hint_y=None, height=dp(28)))
-        key_inp = TextInput(text=current_key, multiline=False, password=True, size_hint_y=None, height=dp(48),
-                            background_color=_rgba(ACCENT_HEX), foreground_color=WHITE_C)
+        key_inp = TextInput(text=current_key, multiline=False, password=True, size_hint_y=None, height=dp(48), background_color=_rgba(ACCENT_HEX), foreground_color=WHITE_C)
         content.add_widget(key_inp)
-        
         save_btn = Button(text="Save", size_hint_y=None, height=dp(48), background_color=GREEN_C, background_normal='')
         content.add_widget(save_btn)
-
         popup = Popup(title="Settings", content=content, size_hint=(0.9, None), height=dp(250))
-
         def _save(*_):
             d = {}
             if os.path.exists(settings_path):
@@ -433,19 +430,16 @@ class NRLTipsApp(App):
             d['ODDS_API_KEY'] = key_inp.text.strip()
             with open(settings_path, 'w') as f: json.dump(d, f)
             popup.dismiss()
-
         save_btn.bind(on_press=_save)
         popup.open()
 
     def run_action(self, action):
         rnd = self.tips.round_input.text.strip()
         args = ["--round", rnd] if rnd and rnd.lower() != "auto" and rnd.isdigit() else []
-        
         self.output.title_lbl.text = action.replace("_", " ").title()
         self.output.out_lbl.text = ""
         self.sm.transition.direction = 'left'
         self.sm.current = 'output'
-        
         if action == "tips":
             self._start_worker("Fetching tips...", lambda: self._exec('s6_tips.py', args))
         elif action == "tips_no_odds":
@@ -472,7 +466,6 @@ class NRLTipsApp(App):
         if self._running: return
         self._running = True
         self.output.status_lbl.text = status
-        
         def _wrap():
             try: fn()
             except Exception as e: 
@@ -483,47 +476,71 @@ class NRLTipsApp(App):
         threading.Thread(target=_wrap, daemon=True).start()
 
     def _exec(self, script, args):
-        """Run a backend script via subprocess inside the worker thread."""
+        """Run a backend script. Prefers subprocess for .py, falls back to exec() for .py/.pyc."""
         import subprocess
-        script_path = os.path.join(DATA_DIR, script)
-        if not os.path.exists(script_path):
-            script_path = os.path.join(BUNDLE_DIR, script)
-            
-        if not os.path.exists(script_path):
+        import marshal
+        import builtins
+        mod_name = script[:-3]
+        py_name = script
+        pyc_name = mod_name + '.pyc'
+        target_py = None
+        target_pyc = None
+        for sd in [DATA_DIR, BUNDLE_DIR]:
+            if os.path.exists(os.path.join(sd, py_name)):
+                target_py = os.path.join(sd, py_name)
+                break
+            if os.path.exists(os.path.join(sd, pyc_name)):
+                target_pyc = os.path.join(sd, pyc_name)
+                break
+        if not target_py and not target_pyc:
             self._q.put(('err', f"Script not found: {script}"))
             return
-
-        cmd = [sys.executable, script_path] + list(args)
-        
-        env = os.environ.copy()
-        env["PYTHONPATH"] = f"{DATA_DIR}:{BUNDLE_DIR}:{env.get('PYTHONPATH', '')}"
-        # Ensure script output isn't buffered
-        env["PYTHONUNBUFFERED"] = "1"
-        
-        # Load API key from settings if available
+        # Try subprocess first if .py exists
+        if target_py:
+            cmd = [sys.executable, target_py] + list(args)
+            env = os.environ.copy()
+            env["PYTHONPATH"] = f"{DATA_DIR}:{BUNDLE_DIR}:{env.get('PYTHONPATH', '')}"
+            env["PYTHONUNBUFFERED"] = "1"
+            try:
+                settings_path = os.path.join(DATA_DIR, 'android_settings.json')
+                if os.path.exists(settings_path):
+                    with open(settings_path) as f:
+                        s = json.load(f)
+                        if s.get('ODDS_API_KEY'): env['ODDS_API_KEY'] = s['ODDS_API_KEY']
+            except: pass
+            try:
+                self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=DATA_DIR, env=env, text=True, bufsize=1)
+                for line in self.proc.stdout:
+                    if line.strip(): self._q.put(('out', line.strip()))
+                self.proc.wait()
+                return
+            except: pass
+        # Fallback: exec()
+        file_to_run = target_py or target_pyc
         try:
-            settings_path = os.path.join(DATA_DIR, 'android_settings.json')
-            if os.path.exists(settings_path):
-                with open(settings_path) as f:
-                    s = json.load(f)
-                    if s.get('ODDS_API_KEY'):
-                        env['ODDS_API_KEY'] = s['ODDS_API_KEY']
-        except: pass
-
-        try:
-            self.proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                cwd=DATA_DIR, env=env, text=True, bufsize=1
-            )
-            
-            for line in self.proc.stdout:
-                if line.strip():
-                    self._q.put(('out', line.strip()))
-            
-            self.proc.wait()
+            if file_to_run.endswith('.pyc'):
+                with open(file_to_run, 'rb') as f:
+                    f.read(16)
+                    code_obj = marshal.loads(f.read())
+            else:
+                with open(file_to_run, 'r') as f:
+                    code_obj = compile(f.read(), file_to_run, 'exec')
+            old_stdout, old_stderr, old_argv = sys.stdout, sys.stderr, sys.argv
+            class Capturer:
+                def __init__(self, q, kind): self.q, self.kind = q, kind
+                def write(self, t):
+                    if t.strip(): self.q.put((self.kind, t.strip()))
+                def flush(self): pass
+            sys.stdout = Capturer(self._q, 'out')
+            sys.stderr = Capturer(self._q, 'err')
+            sys.argv = [file_to_run] + list(args)
+            try:
+                exec(code_obj, {'__file__': file_to_run, '__name__': '__main__', '__builtins__': builtins})
+            except SystemExit: pass
+            finally:
+                sys.stdout, sys.stderr, sys.argv = old_stdout, old_stderr, old_argv
         except Exception as e:
-            import traceback
-            self._q.put(('err', f"Subprocess error: {e}\n{traceback.format_exc()}"))
+            self._q.put(('err', f"Execution failed: {e}"))
 
     def _pump(self, _):
         while not self._q.empty():
@@ -532,15 +549,12 @@ class NRLTipsApp(App):
                 self._running = False
                 self.output.status_lbl.text = "Done"
             elif kind == 'out':
-                if text:
-                    self._append_formatted(text)
+                if text: self._append_formatted(text)
             elif kind == 'err':
-                if text:
-                    self.output.out_lbl.text += f"[color={RED_HEX}]{text}[/color]\n"
+                if text: self.output.out_lbl.text += f"[color={RED_HEX}]{text}[/color]\n"
 
     def _append_formatted(self, line):
         s = line.strip()
-        # Basic classification for color coding similar to classifying in web_gui
         if s.startswith("▶") or s.startswith("TIP:"):
             self.output.out_lbl.text += f"[color={GREEN_HEX}][b]{line}[/b][/color]\n"
         elif s.startswith("⚠") or "⚡" in s:
@@ -559,10 +573,7 @@ class NRLTipsApp(App):
 
     def _show_model_info(self):
         self.output.out_lbl.text = ""
-        for path, label in [
-            (os.path.join(DATA_DIR, 'nrl_model_info.json'),        "With Odds"),
-            (os.path.join(DATA_DIR, 'nrl_model_no_odds_info.json'), "No Odds"),
-        ]:
+        for path, label in [(os.path.join(DATA_DIR, 'nrl_model_info.json'), "With Odds"), (os.path.join(DATA_DIR, 'nrl_model_no_odds_info.json'), "No Odds")]:
             if not os.path.exists(path):
                 self.output.out_lbl.text += f"[color={YELLOW_HEX}][{label}][/color] No model info found.\n\n"
                 continue
@@ -582,12 +593,6 @@ class NRLTipsApp(App):
             except Exception as e:
                 self.output.out_lbl.text += f"Error loading {label}: {e}\n"
         self.output.status_lbl.text = "Done"
-
-class _Pipe:
-    def __init__(self, q, kind): self.q, self.kind = q, kind
-    def write(self, t): 
-        if t.strip(): self.q.put((self.kind, t.strip()))
-    def flush(self): pass
 
 if __name__ == '__main__':
     NRLTipsApp().run()
