@@ -99,7 +99,6 @@ def main():
                         help="Only process rows where key_players_out is not yet computed")
     args = parser.parse_args()
 
-    print("Loading nrl_source_data.csv...")
     df = pd.read_csv(DATA_PATH, parse_dates=["date"])
 
     # Ensure columns exist — NaN means "not yet computed"; 0 means "computed, none out"
@@ -121,9 +120,6 @@ def main():
     # but only write values for the filtered slice.
     all_completed = df[df["winner"].notna()].sort_values(["date", "season", "round"])
     write_mask    = set(df[mask].index)
-
-    print(f"  Processing {len(all_completed)} completed games chronologically...")
-    print(f"  Will write squad info for {len(write_mask)} rows.")
 
     # Load local player cache — avoids re-fetching historical data every run
     player_cache = load_player_cache()
@@ -158,13 +154,11 @@ def main():
             # Fetch matchCentreUrl cache for this round if not cached
             key = (season, round_num)
             if key not in url_cache:
-                print(f"\n  Season {season} Round {round_num}...", end=" ", flush=True)
                 url_cache[key] = build_round_url_cache(season, round_num)
                 time.sleep(0.3)
 
             mc_url = find_mc_url(url_cache[key], home, away)
             if not mc_url:
-                print("?", end="", flush=True)
                 skipped += 1
                 continue
 
@@ -186,7 +180,6 @@ def main():
             df.at[idx, "home_key_players_out"] = home_out
             df.at[idx, "away_key_players_out"] = away_out
             updated += 1
-            print(".", end="", flush=True)
 
         # Update tracker with actual starters for future games
         tracker.update(home, home_players)
@@ -195,15 +188,9 @@ def main():
     # Persist cache updates
     if cache_dirty:
         save_player_cache(player_cache)
-        print(f"\n  Player cache updated ({len(player_cache)} games stored).")
 
-    if cached_hits:
-        print(f"  {cached_hits} games loaded from local cache (no network requests).")
-
-    print(f"\nUpdated {updated} rows | Skipped {skipped} (no matchCentreUrl found)")
+    print(f"Updated {updated} rows | Skipped {skipped}")
     df.to_csv(DATA_PATH, index=False)
-    print(f"Saved → {DATA_PATH}")
-    print("Now retrain: python nrl_model.py --train")
 
 
 if __name__ == "__main__":

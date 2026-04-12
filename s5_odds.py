@@ -50,16 +50,112 @@ def normalise(name: str) -> str:
 
 
 def download_odds():
-    print(f"Downloading odds data from aussportsbetting.com ...")
-    r = requests.get(ODDS_URL, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    with open(ODDS_PATH, "wb") as f:
-        f.write(r.content)
-    print(f"  Saved {len(r.content):,} bytes to {ODDS_PATH}")
+    try:
+        r = requests.get(ODDS_URL, headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        with open(ODDS_PATH, "wb") as f:
+            f.write(r.content)
+    except Exception as e:
+        if os.path.exists(ODDS_PATH):
+            print(f"Download failed ({e}) — using cached file.")
+        else:
+            raise RuntimeError(
+                f"Odds download failed and no cached file available: {e}"
+            ) from e
+
+
+def _xlsx_to_df(path, header_row=1):
+    """Parse xlsx with stdlib only — no openpyxl/xlrd required."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from datetime import datetime, timedelta
+
+    NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+
+    with zipfile.ZipFile(path) as zf:
+        names = zf.namelist()
+
+        # Shared strings (text cells)
+        shared = []
+        if 'xl/sharedStrings.xml' in names:
+            root = ET.parse(zf.open('xl/sharedStrings.xml')).getroot()
+            for si in root.iter(f'{NS}si'):
+                shared.append(''.join(t.text or '' for t in si.iter(f'{NS}t')))
+
+        # Detect which cell styles represent dates
+        date_styles = set()
+        if 'xl/styles.xml' in names:
+            sr = ET.parse(zf.open('xl/styles.xml')).getroot()
+            built_in_dates = set(range(14, 18)) | {22}
+            custom_dates   = set()
+            nf_node = sr.find(f'{NS}numFmts')
+            if nf_node is not None:
+                for nf in nf_node:
+                    fid = int(nf.get('numFmtId', 0))
+                    fc  = nf.get('formatCode', '').lower()
+                    if any(x in fc for x in ('yy', 'mm/', '/dd', 'dd/', 'm/', 'd/')):
+                        custom_dates.add(fid)
+            xfs = sr.find(f'{NS}cellXfs') or sr.find(f'.//{NS}cellXfs')
+            if xfs is not None:
+                for i, xf in enumerate(xfs):
+                    if int(xf.get('numFmtId', 0)) in (built_in_dates | custom_dates):
+                        date_styles.add(i)
+
+        # First worksheet
+        sheet = next((n for n in sorted(names) if n.startswith('xl/worksheets/sheet')), None)
+        if not sheet:
+            raise ValueError("No worksheet in xlsx")
+
+        def col_idx(ref_str):
+            n = 0
+            for c in ref_str:
+                if c.isalpha():
+                    n = n * 26 + ord(c.upper()) - 64
+            return n - 1
+
+        rows = []
+        for row_el in ET.parse(zf.open(sheet)).getroot().iter(f'{NS}row'):
+            row = {}
+            for c in row_el.findall(f'{NS}c'):
+                ref = c.get('r', '')
+                t   = c.get('t', '')
+                s   = int(c.get('s', -1))
+                v   = c.find(f'{NS}v')
+                idx = col_idx(''.join(ch for ch in ref if ch.isalpha()))
+                if v is None or v.text is None:
+                    val = ''
+                elif t == 's':
+                    val = shared[int(v.text)]
+                elif s in date_styles:
+                    try:
+                        val = (datetime(1899, 12, 30) + timedelta(days=float(v.text))).strftime('%Y-%m-%d')
+                    except Exception:
+                        val = v.text
+                else:
+                    try:
+                        f = float(v.text)
+                        val = int(f) if f == int(f) else f
+                    except (ValueError, TypeError):
+                        val = v.text or ''
+                row[idx] = val
+            rows.append(row)
+
+    if len(rows) <= header_row:
+        return pd.DataFrame()
+    n_cols = max((max(r.keys(), default=-1) for r in rows), default=-1) + 1
+    to_list = lambda r: [r.get(i, '') for i in range(n_cols)]
+    headers = to_list(rows[header_row])
+    return pd.DataFrame([to_list(r) for r in rows[header_row + 1:]], columns=headers)
 
 
 def load_odds() -> pd.DataFrame:
-    df = pd.read_excel(ODDS_PATH, header=1)
+    try:
+        df = pd.read_excel(ODDS_PATH, header=1, engine='openpyxl')
+    except Exception as e1:
+        try:
+            df = _xlsx_to_df(ODDS_PATH, header_row=1)
+        except Exception as e2:
+            raise RuntimeError(f"Cannot read odds xlsx: {e2}") from e2
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df[df["Date"].notna()].copy()
     df["home_norm"] = df["Home Team"].apply(normalise)
@@ -76,11 +172,7 @@ def main():
     if not args.no_download or not os.path.exists(ODDS_PATH):
         download_odds()
 
-    print("Loading odds data ...")
     odds = load_odds()
-    print(f"  {len(odds)} odds rows, {odds['Date'].min().date()} to {odds['Date'].max().date()}")
-
-    print("Loading nrl_source_data.csv ...")
     src = pd.read_csv(DATA_PATH)
     src["date_dt"] = pd.to_datetime(src["date"], errors="coerce")
 
@@ -150,13 +242,8 @@ def main():
     src.drop(columns=["date_dt"], inplace=True)
     src.to_csv(DATA_PATH, index=False)
 
-    print(f"\nUpdated : {updated} rows with odds")
-    print(f"Unmatched: {unmatched} rows (no odds found for date+teams)")
-    print(f"Saved to {DATA_PATH}")
-
-    # Summary of coverage
     filled = (src["market_home_win_odds"] != 0).sum()
-    print(f"\nOdds coverage: {filled}/{len(src)} rows ({filled/len(src)*100:.1f}%)")
+    print(f"Odds updated: {updated} rows ({filled}/{len(src)} total coverage, {unmatched} unmatched)")
 
 
 if __name__ == "__main__":

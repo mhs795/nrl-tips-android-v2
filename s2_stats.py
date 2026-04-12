@@ -164,27 +164,22 @@ def main():
     parser.add_argument("--round",  type=int, default=None)
     args = parser.parse_args()
 
-    print("Loading nrl_source_data.csv...")
     df = pd.read_csv(DATA_PATH)
     for col in STAT_COLS:
         if col not in df.columns:
             df[col] = 0.0
         df[col] = df[col].astype(float)
 
-    # Filter to rows needing stats
     mask = df.apply(needs_stats, axis=1)
     if args.season:
         mask &= df["season"] == args.season
     if args.round:
         mask &= df["round"] == args.round
-    # Only historical (completed) games
     mask &= df["winner"].notna()
 
     todo = df[mask]
-    print(f"  {len(todo)} rows need advanced stats.")
-
     if len(todo) == 0:
-        print("Nothing to do.")
+        print("Stats up to date.")
         return
 
     # Group by season+round for efficiency
@@ -200,12 +195,10 @@ def main():
 
         # Rebuild URL cache when season/round changes
         if (season, round_num) != last_season_round:
-            print(f"\n  Season {season} Round {round_num}...", end=" ", flush=True)
             url_cache = build_round_url_cache(season, round_num)
             last_season_round = (season, round_num)
             time.sleep(0.3)
 
-        # Find the matchCentreUrl
         mc_url = None
         for (ht, at), url in url_cache.items():
             if (ht.lower() in home.lower() or home.lower() in ht.lower()) and \
@@ -214,30 +207,23 @@ def main():
                 break
 
         if not mc_url:
-            print("?", end="", flush=True)
             continue
 
         stats = fetch_match_stats(mc_url)
         if not stats:
-            print("x", end="", flush=True)
             time.sleep(0.2)
             continue
 
-        # Write home stats
         for col, val in stats["home"].items():
             df.at[idx, f"home_{col}"] = val
-        # Write away stats
         for col, val in stats["away"].items():
             df.at[idx, f"away_{col}"] = val
 
         updated += 1
-        print(".", end="", flush=True)
-        time.sleep(0.25)   # polite — ~4 req/sec
+        time.sleep(0.25)
 
-    print(f"\n\nUpdated {updated} rows with real advanced stats.")
+    print(f"Stats updated: {updated} rows.")
     df.to_csv(DATA_PATH, index=False)
-    print(f"Saved to {DATA_PATH}")
-    print("Now retrain: python nrl_model.py --train")
 
 
 if __name__ == "__main__":

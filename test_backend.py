@@ -120,7 +120,7 @@ def test_npz_models():
         path = os.path.join(REPO, fname)
         assert os.path.exists(path), f"Model file missing: {fname}"
         m = load_model(path)
-        assert "folds" in m and len(m["folds"]) > 0, f"{fname}: no folds"
+        assert "n_folds" in m and len(m["n_folds"]) > 0, f"{fname}: no n_folds"
         assert "feature_cols" in m and len(m["feature_cols"]) > 0, f"{fname}: no feature_cols"
 
 test("npz models: load nrl_model.npz and nrl_model_no_odds.npz", test_npz_models)

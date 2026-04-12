@@ -337,13 +337,13 @@ def _parse_nrl_api_draw(data: dict, round_num: int, season: int) -> list[dict]:
             venue = f.get("venue", {}).get("name", "") if isinstance(f.get("venue"), dict) else f.get("venue", "")
             date_str = f.get("clock", {}).get("kickOffTimeLong") or f.get("matchDate", "")
             games.append({
-                "season":  season,
-                "round":   round_num,
+                "season":    season,
+                "round":     round_num,
                 "home_team": canonical(home),
                 "away_team": canonical(away),
-                "venue":   venue,
-                "date":    date_str[:10] if date_str else "",
-                "kickoff": date_str or "",   # full ISO datetime for kick-off time checks
+                "venue":     venue,
+                "date":      date_str[:10] if date_str else "",
+                "kickoff":   date_str or "",
             })
     except Exception:
         pass
@@ -538,12 +538,14 @@ def fetch_odds() -> dict[tuple, dict]:
     Fetch NRL odds from The Odds API (https://the-odds-api.com, free tier).
     Set ODDS_API_KEY env var to enable. Returns dict keyed by (home, away) tuple.
     """
-    if not ODDS_API_KEY:
+    # Re-read at call time so env vars set after module load are picked up
+    key = os.environ.get("ODDS_API_KEY", "") or ODDS_API_KEY
+    if not key:
         return {}
     try:
         url = (
             "https://api.the-odds-api.com/v4/sports/rugbyleague_nrl/odds/"
-            f"?apiKey={ODDS_API_KEY}&regions=au&markets=h2h,spreads&oddsFormat=decimal"
+            f"?apiKey={key}&regions=au&markets=h2h,spreads&oddsFormat=decimal"
         )
         r = requests.get(url, timeout=10)
         r.raise_for_status()
@@ -888,98 +890,109 @@ def run_predictions(games_df: pd.DataFrame, use_odds: bool = True) -> pd.DataFra
     """Load model, engineer features, output predictions."""
     # Import here to avoid circular dep
     sys.path.insert(0, SCRIPT_DIR)
-    from m5_nrl import engineer_features, FEATURE_COLS
+    from m5_nrl import engineer_features
 
-    model_path = MODEL_PATH if use_odds else MODEL_PATH_NO_ODDS
+    pkl_path = MODEL_PATH if use_odds else MODEL_PATH_NO_ODDS
+    npz_name = "nrl_model.npz" if use_odds else "nrl_model_no_odds.npz"
+    npz_path = os.path.join(SCRIPT_DIR, npz_name)
 
-    if not os.path.exists(model_path):
-        if use_odds:
-            # Fall back to market implied probability from odds
-            def odds_prob(row):
-                h, a = row["market_home_win_odds"], row["market_away_win_odds"]
-                if h > 1 and a > 1:
-                    hi = 1 / h; ai = 1 / a; total = hi + ai
-                    return round(hi / total * 100, 1), round(ai / total * 100, 1)
-                return 50.0, 50.0
+    # Try .pkl with sklearn first (matches desktop exactly). Fall back to .npz
+    # when sklearn is unavailable (real Android device).
+    if os.path.exists(pkl_path):
+        try:
+            with open(pkl_path, "rb") as f:
+                model, feature_cols = pickle.load(f)
+            df_feat = engineer_features(games_df)
+            X       = df_feat.reindex(columns=feature_cols, fill_value=0).fillna(0)
+            probs   = model.predict_proba(X)[:, 1]
+            preds   = (probs >= 0.5).astype(int)
             games_df = games_df.copy()
-            probs = games_df.apply(odds_prob, axis=1, result_type="expand")
-            games_df["home_win_prob"] = probs[0]
-            games_df["away_win_prob"] = probs[1]
-            games_df["predicted_winner"] = np.where(
-                games_df["home_win_prob"] >= games_df["away_win_prob"],
-                games_df["home_team"], games_df["away_team"]
-            )
-            games_df["confidence"] = np.maximum(games_df["home_win_prob"], games_df["away_win_prob"])
+            games_df["home_win_prob"]    = (probs * 100).round(1)
+            games_df["away_win_prob"]    = ((1 - probs) * 100).round(1)
+            games_df["predicted_winner"] = np.where(preds, games_df["home_team"], games_df["away_team"])
+            games_df["confidence"]       = np.maximum(games_df["home_win_prob"], games_df["away_win_prob"])
+            if "date" not in games_df.columns:
+                games_df["date"] = datetime.now().strftime("%Y-%m-%d")
             return games_df
-        else:
-            raise FileNotFoundError(
-                f"No no-odds model found at {model_path}. "
-                "Use 'Retrain (No Odds)' to train it first."
-            )
+        except (ImportError, ModuleNotFoundError):
+            pass  # sklearn not available — fall through to .npz
 
-    with open(model_path, "rb") as f:
-        model, feature_cols = pickle.load(f)
+    if os.path.exists(npz_path):
+        # Android path — pure numpy, no sklearn required
+        from nrl_predict import load_model, predict_proba_home
+        npz_model    = load_model(npz_path)
+        feature_cols = npz_model['feature_cols']
+        df_feat      = engineer_features(games_df)
+        X            = df_feat.reindex(columns=feature_cols, fill_value=0).fillna(0).values
+        probs        = predict_proba_home(npz_model, X)
+        preds        = (probs >= 0.5).astype(int)
+        games_df = games_df.copy()
+        games_df["home_win_prob"]    = (probs * 100).round(1)
+        games_df["away_win_prob"]    = ((1 - probs) * 100).round(1)
+        games_df["predicted_winner"] = np.where(preds, games_df["home_team"], games_df["away_team"])
+        games_df["confidence"]       = np.maximum(games_df["home_win_prob"], games_df["away_win_prob"])
+        if "date" not in games_df.columns:
+            games_df["date"] = datetime.now().strftime("%Y-%m-%d")
+        return games_df
 
-    df_feat = engineer_features(games_df)
-    X = df_feat.reindex(columns=feature_cols, fill_value=0).fillna(0)
-    probs = model.predict_proba(X)[:, 1]
-    preds = (probs >= 0.5).astype(int)
+    if use_odds:
+        # No model at all — fall back to market implied probability from odds
+        def odds_prob(row):
+            h, a = row["market_home_win_odds"], row["market_away_win_odds"]
+            if h > 1 and a > 1:
+                hi = 1 / h; ai = 1 / a; total = hi + ai
+                return round(hi / total * 100, 1), round(ai / total * 100, 1)
+            return 50.0, 50.0
+        games_df = games_df.copy()
+        probs_df = games_df.apply(odds_prob, axis=1, result_type="expand")
+        games_df["home_win_prob"]    = probs_df[0]
+        games_df["away_win_prob"]    = probs_df[1]
+        games_df["predicted_winner"] = np.where(
+            games_df["home_win_prob"] >= games_df["away_win_prob"],
+            games_df["home_team"], games_df["away_team"]
+        )
+        games_df["confidence"] = np.maximum(games_df["home_win_prob"], games_df["away_win_prob"])
+        return games_df
 
-    games_df = games_df.copy()
-    games_df["home_win_prob"]    = (probs * 100).round(1)
-    games_df["away_win_prob"]    = ((1 - probs) * 100).round(1)
-    games_df["predicted_winner"] = np.where(preds, games_df["home_team"], games_df["away_team"])
-    games_df["confidence"]       = np.maximum(games_df["home_win_prob"], games_df["away_win_prob"])
-    return games_df
+    raise FileNotFoundError(
+        f"No model found at {pkl_path} or {npz_path}. "
+        "Rebuild the APK with an up-to-date nrl_model_no_odds.npz."
+    )
 
 
 # ─── OUTPUT ───────────────────────────────────────────────────────────────────
 
 def print_tips(results: pd.DataFrame, round_num: int, season: int, data_source: str, use_odds: bool = True):
     results = results.sort_values("date")
-    model_tag = "" if use_odds else " [no-odds model]"
-    print(f"\nNRL {season} — ROUND {round_num} TIPS{model_tag}  [{data_source}]")
-    print("=" * 70)
-
-    no_model = not os.path.exists(MODEL_PATH if use_odds else MODEL_PATH_NO_ODDS)
-    if no_model:
-        print("  [odds-only mode — train the model with more historical data for better picks]\n")
-
+    model_label = "with odds" if use_odds else "no odds"
+    print(f"Round {round_num} · {season}  [{model_label}]")
     for _, row in results.iterrows():
         tip  = row["predicted_winner"]
         conf = row["confidence"]
-        h    = f"{row['home_team']} ({row['home_win_prob']:.0f}%)"
-        a    = f"{row['away_team']} ({row['away_win_prob']:.0f}%)"
-        bar  = "█" * int((conf - 50) / 5)
-        flag = " ⚡" if conf >= 70 else ""
-        print(f"  {h:<32}  v  {a:<32}")
-        print(f"  TIP: {tip:<40} {conf:.0f}% {bar}{flag}")
-
-        # Squad notes
+        filled = min(10, int((conf - 50) / 5))
+        bar    = "█" * filled + "░" * (10 - filled)
+        flag   = " ⚡" if conf >= 70 else ""
+        print(f"{row['home_team']}  {row['home_win_prob']:.0f}%")
+        print(f"{row['away_team']}  {row['away_win_prob']:.0f}%")
+        print(f"▶ {tip}  {bar}  {conf:.0f}%{flag}")
         h_out = int(row.get("home_key_players_out", 0))
         a_out = int(row.get("away_key_players_out", 0))
-        notes = []
+        h_names = str(row.get("home_players_out_names", "") or "")
+        a_names = str(row.get("away_players_out_names", "") or "")
         if h_out > 0:
-            h_names = str(row.get("home_players_out_names", "") or "")
-            detail = f" ({h_names})" if h_names else ""
-            notes.append(f"{row['home_team']}: {h_out} key player{'s' if h_out>1 else ''} out{detail}")
+            label = h_names if h_names else f"{h_out} key player{'s' if h_out>1 else ''} out"
+            print(f"⚠ {row['home_team']}: {label}")
         if a_out > 0:
-            a_names = str(row.get("away_players_out_names", "") or "")
-            detail = f" ({a_names})" if a_names else ""
-            notes.append(f"{row['away_team']}: {a_out} key player{'s' if a_out>1 else ''} out{detail}")
-        if notes:
-            print(f"  ⚠  {' | '.join(notes)}")
+            label = a_names if a_names else f"{a_out} key player{'s' if a_out>1 else ''} out"
+            print(f"⚠ {row['away_team']}: {label}")
         print()
-
-    print("=" * 70)
-    tips_list = results[["date", "home_team", "away_team", "predicted_winner", "home_win_prob", "away_win_prob", "confidence"]]
+    
+    # Save to CSV if we are in 'live' mode (or if the file doesn't exist)
     suffix = "" if use_odds else "_no_odds"
     out_path = os.path.join(SCRIPT_DIR, f"tips_{season}_r{round_num}{suffix}.csv")
-
-    if not os.path.exists(out_path):
-        tips_list.to_csv(out_path, index=False)
-        print(f"Saved → {out_path}\n")
-
+    if data_source == "live" or not os.path.exists(out_path):
+        cols = [c for c in ["home_team", "away_team", "predicted_winner", "home_win_prob", "away_win_prob", "confidence"] if c in results.columns]
+        results[cols].to_csv(out_path, index=False)
 
 
 # ─── AUTO-UPDATE LAST ROUND RESULTS ──────────────────────────────────────────
@@ -1050,10 +1063,8 @@ def auto_save_last_round(season: int, tips_round: int) -> bool:
         prev = existing[(existing["season"] == season) & (existing["round"] == last_round)]
         already_saved = set(zip(prev["home_team"], prev["away_team"]))
 
-    print(f"Checking Round {last_round} results...")
     raw_games = fetch_draw_nrlcom(season, last_round)
     if not raw_games:
-        print(f"  Could not fetch Round {last_round} from nrl.com.")
         return False
 
     # Filter to completed games not yet saved
@@ -1066,10 +1077,7 @@ def auto_save_last_round(season: int, tips_round: int) -> bool:
             new_games.append(result)
 
     if not new_games:
-        print(f"  Round {last_round} already up to date ({len(already_saved)} games in DB).")
         return False
-
-    print(f"  Found {len(new_games)} new result(s) — computing features and saving...")
 
     # Compute feature rows using current history
     hist = load_history()
@@ -1084,20 +1092,22 @@ def auto_save_last_round(season: int, tips_round: int) -> bool:
 
     new_df = pd.DataFrame(new_rows)
     new_df.to_csv(DATA_PATH, mode="a", header=not os.path.exists(DATA_PATH), index=False)
-    print(f"  Saved {len(new_rows)} result(s) to nrl_source_data.csv.")
     return True
 
 
 def retrain(use_odds: bool = True):
-    """Re-train the model in-process."""
-    # Ensure we only train, do not regenerate past tips
+    """Re-train the model in-process. Skipped silently if sklearn is unavailable (Android)."""
+    try:
+        import sklearn  # noqa — not installed on Android
+    except ImportError:
+        print("  [model up to date — bundled predictions will be used]")
+        return
     sys.path.insert(0, SCRIPT_DIR)
     from m5_nrl import load_data, train
     label = "with odds" if use_odds else "no odds"
     print(f"Retraining model ({label})...")
     df = load_data(DATA_PATH)
     train(df, use_odds=use_odds)
-    print(f"Retraining complete ({label}).")
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -1114,129 +1124,82 @@ def main():
     use_odds = not args.no_odds
     round_num = args.round or estimate_current_round(season)
 
-    # 1. Check for existing snapshot (historical record)
+    # 1. Determine if the round has started (lock tips if so)
     suffix = "" if use_odds else "_no_odds"
     snapshot_path = os.path.join(SCRIPT_DIR, f"tips_{season}_r{round_num}{suffix}.csv")
-    if os.path.exists(snapshot_path):
-        # Lock to snapshot once the first game of the round has kicked off
-        games = fetch_draw_nrlcom(season, round_num)
-        started = False
-        if games:
-            now = datetime.now().astimezone()
-            for g in sorted(games, key=lambda x: x.get("kickoff") or x.get("date", "")):
-                kickoff_str = g.get("kickoff") or g.get("date", "")
-                if not kickoff_str:
-                    continue
-                try:
-                    # Full ISO datetime with timezone (from API)
-                    from datetime import timezone
-                    ko = datetime.fromisoformat(kickoff_str)
-                    if ko.tzinfo is None:
-                        ko = ko.replace(tzinfo=timezone.utc)
-                    if now >= ko:
-                        started = True
-                except ValueError:
-                    # Date-only fallback (YYYY-MM-DD)
-                    if kickoff_str[:10] < str(now.date()):
-                        started = True
-                break  # only check the first (earliest) game
-        
-        if started:
-            print(f"\n[Snapshot found: {os.path.basename(snapshot_path)} (round has started)]")
+    
+    started = False
+    games = fetch_draw_nrlcom(season, round_num)
+    if games:
+        now = datetime.now().astimezone()
+        for g in sorted(games, key=lambda x: x.get("kickoff") or x.get("date", "")):
+            kickoff_str = g.get("kickoff") or g.get("date", "")
+            if not kickoff_str:
+                continue
             try:
-                results = pd.read_csv(snapshot_path)
-                # Add placeholders for squad info if missing in CSV
-                for col in ["home_key_players_out", "away_key_players_out", "home_players_out_names", "away_players_out_names"]:
-                    if col not in results.columns:
-                        results[col] = 0 if "out" in col and "names" not in col else ""
-                print_tips(results, round_num, season, "historical snapshot", use_odds=use_odds)
-                return
-            except Exception as e:
-                print(f"  [warning] Could not read snapshot: {e} — regenerating...")
-        else:
-            print(f"\n[Snapshot found: {os.path.basename(snapshot_path)}, but round has not started. Regenerating...]")
-            os.remove(snapshot_path)  # allow fresh tips to be saved
+                from datetime import timezone
+                ko = datetime.fromisoformat(kickoff_str)
+                if ko.tzinfo is None:
+                    ko = ko.replace(tzinfo=timezone.utc)
+                if now >= ko:
+                    started = True
+            except ValueError:
+                # Fallback for date-only strings
+                if kickoff_str[:10] < str(now.date()):
+                    started = True
+            break  # only check the first (earliest) game
 
-    # 2. Fetch odds (skipped in no-odds mode)
+    # 2. If started and snapshot exists, serve it and exit
+    if started and os.path.exists(snapshot_path):
+        try:
+            results = pd.read_csv(snapshot_path)
+            # Ensure required columns for print_tips exist
+            for col in ["home_key_players_out", "away_key_players_out", "home_players_out_names", "away_players_out_names"]:
+                if col not in results.columns:
+                    results[col] = 0 if "out" in col and "names" not in col else ""
+            print_tips(results, round_num, season, "snapshot", use_odds=use_odds)
+            return
+        except Exception:
+            pass  # fall through to regenerate if CSV is corrupt
+
+    # 3. Fetch live data and predict
+    live_key = os.environ.get("ODDS_API_KEY", "") or ODDS_API_KEY
     odds_map = {}
     if use_odds:
         if round_num < estimate_current_round(season):
-            # For past rounds, always prioritize historical odds from CSV
             odds_map = _fetch_odds_from_csv(season, round_num)
-        
-        if not odds_map and ODDS_API_KEY:
-            # Try live API if no CSV odds found or if current/future round
-            print("Fetching live odds...")
+        if not odds_map and live_key:
             odds_map = fetch_odds()
-            if odds_map:
-                print(f"  Live odds loaded for {len(odds_map)} games.")
-        
         if not odds_map:
-            # Final fallback to CSV if API failed
             odds_map = _fetch_odds_from_csv(season, round_num)
-    else:
-        print("  [no-odds mode — skipping live odds fetch]")
 
-    # 3. Auto-save last round's results and retrain if anything new
-    new_data = auto_save_last_round(season, round_num)
-    if new_data:
-        print("New results detected. Retraining models...")
-        retrain(use_odds=use_odds)
-    else:
-        print("No new results to save. Skipping retrain.")
+    auto_save_last_round(season, round_num)
 
-    print(f"\nFetching NRL {season} Round {round_num} draw...")
-
-    # 3. Fetch draw — fall back to CSV for past rounds when API is unavailable
-    games = fetch_draw_nrlcom(season, round_num)
-    data_source = "nrl.com"
     if not games:
-        games = _fetch_draw_from_csv(season, round_num)
-        data_source = "local CSV"
+        games = fetch_draw_nrlcom(season, round_num)
+        if not games:
+            games = _fetch_draw_from_csv(season, round_num)
+    
     if not games:
-        print("  [!] Could not fetch draw from nrl.com or local CSV")
-        print(f"      You can manually create:  round{round_num}.csv  using round_template.csv")
+        print(f"[!] Could not fetch Round {round_num} draw.")
         sys.exit(1)
 
-    print(f"  Found {len(games)} games.")
-
-    # 4. Fetch ladder
-    print("Fetching ladder...")
     ladder = fetch_ladder_nrlcom(season)
-    if ladder:
-        print(f"  Ladder loaded ({len(ladder)} teams).")
-    else:
-        print("  Could not fetch live ladder — using local history for form stats.")
-
-    # 5. Load local history
-    hist = load_history()
-    print(f"Historical games in local DB: {len(hist)}")
-
-    # 6. Fetch squad info (key players out vs rolling baseline)
-    print("Fetching squad lists for key players out...")
+    hist   = load_history()
     squad_info = _fetch_squad_info(games, season, round_num)
-    if squad_info:
-        announced = sum(1 for v in squad_info.values() if v != (0, 0))
-        print(f"  Squad data: {announced}/{len(squad_info)} games have announced teams.")
-    else:
-        print("  Squad data not yet available — key_players_out will be 0.")
 
-    # 7. Build feature rows
     rows = []
     for g in games:
         row = build_game_row(g, hist, ladder, odds_map)
-        # Inject squad data if available
         sd = squad_info.get((g["home_team"], g["away_team"]), (0, 0, "", ""))
         row["home_key_players_out"] = sd[0]
         row["away_key_players_out"] = sd[1]
         row["home_players_out_names"] = sd[2] if len(sd) > 2 else ""
         row["away_players_out_names"] = sd[3] if len(sd) > 3 else ""
         rows.append(row)
-    games_df = pd.DataFrame(rows)
-
-    # 7. Predict and print
-    results = run_predictions(games_df, use_odds=use_odds)
-    print_tips(results, round_num, season, data_source, use_odds=use_odds)
+    
+    results = run_predictions(pd.DataFrame(rows), use_odds=use_odds)
+    print_tips(results, round_num, season, "live", use_odds=use_odds)
 
 
 if __name__ == "__main__":

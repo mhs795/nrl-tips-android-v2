@@ -98,8 +98,6 @@ def fetch_round(season: int, round_num: int) -> list[dict]:
 def fetch_all_seasons() -> list[dict]:
     all_games = []
     for season in SEASONS:
-        print(f"\nSeason {season}")
-        # First call to get round list
         try:
             r = requests.get(
                 NRL_API,
@@ -114,14 +112,11 @@ def fetch_all_seasons() -> list[dict]:
         for rnd in rounds:
             games = fetch_round(season, rnd)
             if games:
-                print(f"  R{rnd}: {len(games)} games", end="  ", flush=True)
                 all_games.extend(games)
             time.sleep(0.3)   # be polite
-        print()
 
-    # Sort chronologically
     all_games.sort(key=lambda g: (g["date"] or "9999", g["season"], g["round"]))
-    print(f"\nTotal games fetched: {len(all_games)}")
+    print(f"Fetched {len(all_games)} games.")
     return all_games
 
 
@@ -423,7 +418,6 @@ def _fetch_new_rounds(last_season: int, last_round: int) -> list[dict]:
     current_year = datetime.now().year
     new_raw = []
     for season in range(last_season, current_year + 1):
-        print(f"\nSeason {season}")
         try:
             r = requests.get(
                 NRL_API,
@@ -438,35 +432,26 @@ def _fetch_new_rounds(last_season: int, last_round: int) -> list[dict]:
         for rnd in rounds:
             games = fetch_round(season, rnd)
             if games:
-                print(f"  R{rnd}: {len(games)} games", end="  ", flush=True)
                 new_raw.extend(games)
             time.sleep(0.3)
-        print()
     new_raw.sort(key=lambda g: (g["date"] or "9999", g["season"], g["round"]))
     return new_raw
 
 
 def main_new_only():
     """Append only rounds not yet in the CSV, preserving existing data."""
-    print("=" * 60)
-    print("NRL Historical Data Fetcher — new rounds only")
-    print("=" * 60)
-
     if not os.path.exists(OUT_PATH):
-        print("No existing CSV — running full fetch instead.")
         main_full()
         return
 
     existing = pd.read_csv(OUT_PATH, parse_dates=["date"])
     completed = existing[existing["winner"].notna()]
     if len(completed) == 0:
-        print("CSV has no completed games — running full fetch instead.")
         main_full()
         return
 
     last_season = int(completed["season"].max())
     last_round  = int(completed[completed["season"] == last_season]["round"].max())
-    print(f"Existing data ends at Season {last_season} Round {last_round}.")
 
     # Deduplicate key so we don't add rows we already have
     existing_keys = set(
@@ -481,13 +466,10 @@ def main_new_only():
                not in existing_keys]
 
     if not raw_new:
-        print("No new completed games found. Already up to date.")
+        print("Already up to date.")
         return
 
-    print(f"\nFound {len(raw_new)} new game(s).")
-
     # For correct form stats we replay ALL history then compute only new rows.
-    print("\n[2/3] Rebuilding team state from existing CSV for accurate form stats...")
     team_states = _rebuild_team_states(existing)
     current_season = int(completed["season"].max())  # state left at end of existing data
 
@@ -577,39 +559,18 @@ def main_new_only():
         team_states[home].update(hsc, asc, is_home=True,  date=date)
         team_states[away].update(asc, hsc, is_home=False, date=date)
 
-    print(f"\n[3/3] Appending {len(new_rows)} row(s) to {OUT_PATH}...")
     new_df = pd.DataFrame(new_rows)
-    # Align columns with existing CSV
     new_df = new_df.reindex(columns=existing.columns)
     new_df.to_csv(OUT_PATH, mode="a", header=False, index=False)
-    print(f"  Done — {len(new_rows)} new rows appended.")
-    print("\nNow run fetch_stats.py and backfill_squads.py --new-only, then retrain.")
+    print(f"{len(new_rows)} new game(s) added.")
 
 
 def main_full():
-    print("=" * 60)
-    print("NRL Historical Data Fetcher — 2020 to 2025")
-    print("=" * 60)
-
-    print("\n[1/3] Fetching raw results from nrl.com...")
     raw_games = fetch_all_seasons()
-
-    print("\n[2/3] Computing pre-game form stats...")
     feature_rows = compute_all_features(raw_games)
-    print(f"  Built {len(feature_rows)} feature rows.")
-
-    print(f"\n[3/3] Writing to {OUT_PATH}...")
     df = pd.DataFrame(feature_rows)
     df.to_csv(OUT_PATH, index=False)
-    print(f"  Done — {len(df)} rows written.")
-
-    print("\nGames per season:")
-    for s, grp in df.groupby("season"):
-        hw = (grp["winner"] == "home").sum()
-        aw = (grp["winner"] == "away").sum()
-        print(f"  {s}: {len(grp)} games  (home wins: {hw}, away wins: {aw})")
-
-    print("\nNow run:  python nrl_model.py --train")
+    print(f"{len(df)} rows written.")
 
 
 def main():
