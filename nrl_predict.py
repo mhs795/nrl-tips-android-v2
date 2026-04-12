@@ -11,7 +11,9 @@ def load_model(path):
     """Load an exported .npz model."""
     if not os.path.exists(path):
         return None
-    return np.load(path, allow_pickle=True)
+    # Load into memory buffer to bypass potential archive access issues
+    with open(path, 'rb') as f:
+        return np.load(f, allow_pickle=True)
 
 def _sigmoid(x):
     return 1 / (1 + np.exp(-x))

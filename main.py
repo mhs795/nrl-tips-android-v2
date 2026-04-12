@@ -480,27 +480,28 @@ class NRLTipsApp(App):
         import subprocess
         import marshal
         import builtins
-        mod_name = script[:-3]
-        py_name = script
-        pyc_name = mod_name + '.pyc'
-        target_py = None
-        target_pyc = None
-        for sd in [DATA_DIR, BUNDLE_DIR]:
-            if os.path.exists(os.path.join(sd, py_name)):
-                target_py = os.path.join(sd, py_name)
-                break
-            if os.path.exists(os.path.join(sd, pyc_name)):
-                target_pyc = os.path.join(sd, pyc_name)
-                break
+        
+        # Always prefer BUNDLE_DIR for scripts as they are read-only and reliably packed in APK
+        script_path = os.path.join(BUNDLE_DIR, script)
+        pyc_name = script[:-3] + '.pyc'
+        pyc_path = os.path.join(BUNDLE_DIR, pyc_name)
+        
+        target_py = script_path if os.path.exists(script_path) else None
+        target_pyc = pyc_path if os.path.exists(pyc_path) else None
+        
         if not target_py and not target_pyc:
             self._q.put(('err', f"Script not found: {script}"))
             return
+            
         # Try subprocess first if .py exists
         if target_py:
             cmd = [sys.executable, target_py] + list(args)
             env = os.environ.copy()
+            # Still set PYTHONPATH so scripts can find each other
             env["PYTHONPATH"] = f"{DATA_DIR}:{BUNDLE_DIR}:{env.get('PYTHONPATH', '')}"
             env["PYTHONUNBUFFERED"] = "1"
+            
+            # Load API key
             try:
                 settings_path = os.path.join(DATA_DIR, 'android_settings.json')
                 if os.path.exists(settings_path):
@@ -508,13 +509,16 @@ class NRLTipsApp(App):
                         s = json.load(f)
                         if s.get('ODDS_API_KEY'): env['ODDS_API_KEY'] = s['ODDS_API_KEY']
             except: pass
+            
             try:
                 self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=DATA_DIR, env=env, text=True, bufsize=1)
                 for line in self.proc.stdout:
                     if line.strip(): self._q.put(('out', line.strip()))
                 self.proc.wait()
                 return
-            except: pass
+            except Exception as e:
+                self._q.put(('err', f"Subprocess failed: {e}"))
+                
         # Fallback: exec()
         file_to_run = target_py or target_pyc
         try:
