@@ -66,6 +66,7 @@ THEMES = {
 _CURRENT_THEME = 'dark'
 
 def _rgba(h):
+    if isinstance(h, (tuple, list)): return h
     return int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255, 1
 
 BG_C = PANEL_C = ACCENT_C = GREEN_C = YELLOW_C = RED_C = WHITE_C = GREY_C = (0, 0, 0, 1)
@@ -103,10 +104,10 @@ class RoundedButton(Button):
         self.background_normal = ''
         self.background_down   = ''
         self.background_color  = (0, 0, 0, 0)
-        self._base = btn_color
+        self._base = _rgba(btn_color)
         self._radius = radius
         with self.canvas.before:
-            self._ci   = Color(*btn_color)
+            self._ci   = Color(*self._base)
             self._rr   = RoundedRectangle(pos=self.pos, size=self.size,
                                           radius=[self._radius])
         self.bind(pos=self._upd, size=self._upd)
@@ -142,15 +143,18 @@ def _init_data():
     global DATA_DIR
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        # Copy data files
+        # Copy data files (overwrite models to ensure they are current)
         for fname in _DATA_FILES:
             src = os.path.join(BUNDLE_DIR, fname)
             dst = os.path.join(DATA_DIR, fname)
-            if os.path.exists(src) and not os.path.exists(dst):
-                try: shutil.copy(src, dst)
-                except: pass
+            # Only skip if it's the CSV and it already exists
+            is_csv = fname.endswith('.csv')
+            if os.path.exists(src):
+                if not is_csv or not os.path.exists(dst):
+                    try: shutil.copy(src, dst)
+                    except: pass
         
-        # Copy scripts (prefer .py, but handle .pyc)
+        # Copy scripts (ALWAYS overwrite to ensure latest version)
         for fname in _SCRIPT_FILES:
             base = fname[:-3]
             for ext in ['.py', '.pyc']:
@@ -170,12 +174,12 @@ def _init_data():
 
 def _bg(widget, color, radius=0):
     with widget.canvas.before:
-        Color(*color)
-        r = (RoundedRectangle(pos=widget.pos, size=widget.size, radius=[dp(radius)])
-             if radius else Rectangle(pos=widget.pos, size=widget.size))
+        widget.canvas_color = Color(*color)
+        widget.canvas_rect = (RoundedRectangle(pos=widget.pos, size=widget.size, radius=[dp(radius)])
+                              if radius else Rectangle(pos=widget.pos, size=widget.size))
     widget.bind(
-        pos =lambda w, v: setattr(r, 'pos',  v),
-        size=lambda w, v: setattr(r, 'size', v),
+        pos =lambda w, v: setattr(widget.canvas_rect, 'pos',  v),
+        size=lambda w, v: setattr(widget.canvas_rect, 'size', v),
     )
 
 class Header(BoxLayout):
@@ -192,11 +196,11 @@ class Header(BoxLayout):
                               color=WHITE_C, halign='left', valign='middle'))
         
         if on_toggle_theme:
-            theme_btn = Button(text="☀" if _CURRENT_THEME == 'dark' else "☾", font_name='DejaVuSans',
-                               font_size=dp(20), size_hint=(None, 1), width=dp(44),
-                               background_color=(0,0,0,0), color=WHITE_C)
-            theme_btn.bind(on_press=on_toggle_theme)
-            self.add_widget(theme_btn)
+            self.theme_btn = Button(text="☀" if _CURRENT_THEME == 'dark' else "☾", font_name='DejaVuSans' if platform != 'android' else 'Roboto',
+                                    font_size=dp(20), size_hint=(None, 1), width=dp(44),
+                                    background_color=(0,0,0,0), color=WHITE_C)
+            self.theme_btn.bind(on_press=on_toggle_theme)
+            self.add_widget(self.theme_btn)
             
         if on_settings:
             cog = Button(text="[b]...[/b]", markup=True, font_size=dp(20),
@@ -214,35 +218,36 @@ class HomeScreen(Screen):
         layout = BoxLayout(orientation='vertical')
         _bg(layout, BG_C)
         
-        layout.add_widget(Header(on_toggle_theme=app.toggle_theme, on_settings=app.show_settings))
+        self.header = Header(on_toggle_theme=app.toggle_theme, on_settings=app.show_settings)
+        layout.add_widget(self.header)
         
         scroll = ScrollView()
         content = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(20), size_hint_y=None)
         content.bind(minimum_height=content.setter('height'))
         
         # Summary Card
-        summary = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(10), size_hint_y=None, height=dp(180))
-        _bg(summary, PANEL_C, radius=16)
-        summary.add_widget(Label(text="Season 2026", font_size=dp(24), bold=True, color=WHITE_C))
+        self.summary = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(10), size_hint_y=None, height=dp(180))
+        _bg(self.summary, PANEL_C, radius=16)
+        self.summary.add_widget(Label(text="Season 2026", font_size=dp(24), bold=True, color=WHITE_C))
         
         stats_row = BoxLayout(spacing=dp(20))
         self.acc_lbl = Label(text="Loading...", font_size=dp(18), color=GREEN_C)
         self.rnd_lbl = Label(text="Next: R1", font_size=dp(18), color=YELLOW_C)
         stats_row.add_widget(self.acc_lbl)
         stats_row.add_widget(self.rnd_lbl)
-        summary.add_widget(stats_row)
-        content.add_widget(summary)
+        self.summary.add_widget(stats_row)
+        content.add_widget(self.summary)
         
         # Quick Actions
         content.add_widget(Label(text="Quick Actions", font_size=dp(18), bold=True, color=GREY_C, size_hint_y=None, height=dp(30)))
         
         actions = GridLayout(cols=2, spacing=dp(12), size_hint_y=None, height=dp(140))
-        b1 = RoundedButton(text="Get Latest Tips", btn_color=_rgba("1565c0"), color=WHITE_C)
-        b1.bind(on_press=lambda *_: app.go_to_tips())
-        b2 = RoundedButton(text="Compare Models", btn_color=_rgba("00695c"), color=WHITE_C)
-        b2.bind(on_press=lambda *_: app.run_action("compare"))
-        actions.add_widget(b1)
-        actions.add_widget(b2)
+        self.b1 = RoundedButton(text="Get Latest Tips", btn_color=_rgba("1565c0"), color=WHITE_C)
+        self.b1.bind(on_press=lambda *_: app.go_to_tips())
+        self.b2 = RoundedButton(text="Compare Models", btn_color=_rgba("00695c"), color=WHITE_C)
+        self.b2.bind(on_press=lambda *_: app.run_action("compare"))
+        actions.add_widget(self.b1)
+        actions.add_widget(self.b2)
         content.add_widget(actions)
         
         # Recent Performance
@@ -266,7 +271,7 @@ class HomeScreen(Screen):
             if os.path.exists(path):
                 with open(path) as f:
                     d = json.load(f)
-                self.acc_lbl.text = f"Accuracy: {d['cv_accuracy']:.1%}"
+                self.acc_lbl.text = f"Accuracy: {d.get('cv_accuracy', 0):.1%}"
             else:
                 self.acc_lbl.text = "Model: OK"
         except:
@@ -341,7 +346,7 @@ class OutputScreen(Screen):
         sv = ScrollView()
         _bg(sv, _rgba(OUTPUT_HEX))
         self.out_lbl = Label(text="", markup=True, valign='top', halign='left', size_hint_y=None, 
-                             font_size=dp(15), color=WHITE_C, padding=[dp(16), dp(16)], font_name='DejaVuSans')
+                             font_size=dp(15), color=WHITE_C, padding=[dp(16), dp(16)], font_name='DejaVuSans' if platform != 'android' else 'Roboto')
         self.out_lbl.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)),
                           texture_size=lambda w, v: setattr(w, 'height', v[1]))
         sv.add_widget(self.out_lbl)
@@ -374,7 +379,11 @@ class NRLTipsApp(App):
             
             self._q = queue.Queue()
             self._running = False
+            self.proc = None
             Clock.schedule_interval(self._pump, 0.1)
+            
+            # Handle back button
+            Window.bind(on_keyboard=self.on_key)
             
             return self.sm
         except Exception as e:
@@ -387,6 +396,17 @@ class NRLTipsApp(App):
             sv.add_widget(lbl)
             err_box.add_widget(sv)
             return err_box
+
+    def on_key(self, window, key, *args):
+        if key == 27: # ESC or Android Back
+            if self.sm.current == 'home':
+                return False # Exit app
+            if self.sm.current == 'output':
+                self.go_back_from_output()
+            else:
+                self.go_home()
+            return True
+        return False
 
     def go_home(self):
         self.sm.transition.direction = 'right'
@@ -404,6 +424,15 @@ class NRLTipsApp(App):
         new = 'light' if _CURRENT_THEME == 'dark' else 'dark'
         _set_theme(new)
         Window.clearcolor = BG_C
+        # Crude refresh (could be better but effective)
+        self.sm.clear_widgets()
+        self.home = HomeScreen(self, name='home')
+        self.tips = TipsScreen(self, name='tips')
+        self.output = OutputScreen(self, name='output')
+        self.sm.add_widget(self.home)
+        self.sm.add_widget(self.tips)
+        self.sm.add_widget(self.output)
+        self.sm.current = 'home'
 
     def show_settings(self, *_):
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(10))
@@ -455,11 +484,17 @@ class NRLTipsApp(App):
 
     def _clear_cache(self):
         import glob
-        files = glob.glob(os.path.join(DATA_DIR, "tips_cache_*.txt"))
-        for f in files:
-            try: os.remove(f)
-            except: pass
-        self.output.out_lbl.text = f"Cleared {len(files)} cache files.\n"
+        # Clear tips CSVs and cache files
+        patterns = ["tips_*.csv", "tips_cache_*.txt", "squad_player_cache.json"]
+        count = 0
+        for pat in patterns:
+            files = glob.glob(os.path.join(DATA_DIR, pat))
+            for f in files:
+                try: 
+                    os.remove(f)
+                    count += 1
+                except: pass
+        self.output.out_lbl.text = f"Cleared {count} cache/output files.\n"
         self.output.status_lbl.text = "Done"
 
     def _start_worker(self, status, fn):
@@ -476,28 +511,33 @@ class NRLTipsApp(App):
         threading.Thread(target=_wrap, daemon=True).start()
 
     def _exec(self, script, args):
-        """Run a backend script. Prefers subprocess for .py, falls back to exec() for .py/.pyc."""
+        """Run a backend script. Prefers DATA_DIR where files are writable."""
         import subprocess
         import marshal
         import builtins
         
-        # Always prefer BUNDLE_DIR for scripts as they are read-only and reliably packed in APK
-        script_path = os.path.join(BUNDLE_DIR, script)
+        # Always use DATA_DIR for execution so scripts can write to local files
+        script_path = os.path.join(DATA_DIR, script)
         pyc_name = script[:-3] + '.pyc'
-        pyc_path = os.path.join(BUNDLE_DIR, pyc_name)
+        pyc_path = os.path.join(DATA_DIR, pyc_name)
         
         target_py = script_path if os.path.exists(script_path) else None
         target_pyc = pyc_path if os.path.exists(pyc_path) else None
         
+        # If not in DATA_DIR yet (unlikely), fallback to BUNDLE_DIR
         if not target_py and not target_pyc:
-            self._q.put(('err', f"Script not found: {script}"))
-            return
-            
-        # Try subprocess first if .py exists
-        if target_py:
+            target_py = os.path.join(BUNDLE_DIR, script)
+            target_pyc = os.path.join(BUNDLE_DIR, pyc_name)
+            if not os.path.exists(target_py) and not os.path.exists(target_pyc):
+                self._q.put(('err', f"Script not found: {script}"))
+                return
+            target_py = target_py if os.path.exists(target_py) else None
+            target_pyc = target_pyc if os.path.exists(target_pyc) else None
+
+        # Try subprocess first if NOT on Android (on Android sys.executable is the app binary)
+        if target_py and platform != 'android':
             cmd = [sys.executable, target_py] + list(args)
             env = os.environ.copy()
-            # Still set PYTHONPATH so scripts can find each other
             env["PYTHONPATH"] = f"{DATA_DIR}:{BUNDLE_DIR}:{env.get('PYTHONPATH', '')}"
             env["PYTHONUNBUFFERED"] = "1"
             
@@ -515,11 +555,12 @@ class NRLTipsApp(App):
                 for line in self.proc.stdout:
                     if line.strip(): self._q.put(('out', line.strip()))
                 self.proc.wait()
+                self.proc = None
                 return
             except Exception as e:
                 self._q.put(('err', f"Subprocess failed: {e}"))
                 
-        # Fallback: exec()
+        # Fallback (or Android): exec()
         file_to_run = target_py or target_pyc
         try:
             if file_to_run.endswith('.pyc'):
@@ -529,15 +570,26 @@ class NRLTipsApp(App):
             else:
                 with open(file_to_run, 'r') as f:
                     code_obj = compile(f.read(), file_to_run, 'exec')
+            
             old_stdout, old_stderr, old_argv = sys.stdout, sys.stderr, sys.argv
             class Capturer:
                 def __init__(self, q, kind): self.q, self.kind = q, kind
                 def write(self, t):
-                    if t.strip(): self.q.put((self.kind, t.strip()))
+                    if t: self.q.put((self.kind, t))
                 def flush(self): pass
             sys.stdout = Capturer(self._q, 'out')
             sys.stderr = Capturer(self._q, 'err')
             sys.argv = [file_to_run] + list(args)
+            
+            # Set environment variable for the current process so exec'd script sees it
+            try:
+                settings_path = os.path.join(DATA_DIR, 'android_settings.json')
+                if os.path.exists(settings_path):
+                    with open(settings_path) as f:
+                        s = json.load(f)
+                        if s.get('ODDS_API_KEY'): os.environ['ODDS_API_KEY'] = s['ODDS_API_KEY']
+            except: pass
+
             try:
                 exec(code_obj, {'__file__': file_to_run, '__name__': '__main__', '__builtins__': builtins})
             except SystemExit: pass
@@ -555,25 +607,38 @@ class NRLTipsApp(App):
             elif kind == 'out':
                 if text: self._append_formatted(text)
             elif kind == 'err':
-                if text: self.output.out_lbl.text += f"[color={RED_HEX}]{text}[/color]\n"
+                if text: self.output.out_lbl.text += f"[color={RED_HEX}]{text}[/color]"
 
     def _append_formatted(self, line):
         s = line.strip()
+        if not s: 
+            if line: self.output.out_lbl.text += line
+            return
+
+        # Ensure we have a newline if the input line had one or if we are appending a new block
+        end = "\n" if line.endswith("\n") or not line.strip("\r\n") == line else ""
+        if not end and not line.endswith(("\n", "\r")): end = "\n"
+
         if s.startswith("▶") or s.startswith("TIP:"):
-            self.output.out_lbl.text += f"[color={GREEN_HEX}][b]{line}[/b][/color]\n"
+            self.output.out_lbl.text += f"[color={GREEN_HEX}][b]{s}[/b][/color]{end}"
         elif s.startswith("⚠") or "⚡" in s:
-            self.output.out_lbl.text += f"[color={YELLOW_HEX}]{line}[/color]\n"
+            self.output.out_lbl.text += f"[color={YELLOW_HEX}]{s}[/color]{end}"
         elif s.startswith("Round ") or s.startswith("==="):
-            self.output.out_lbl.text += f"\n[b]{line}[/b]\n"
+            self.output.out_lbl.text += f"\n[b]{s}[/b]{end}"
         elif "error" in s.lower() or s.startswith("[!]"):
-            self.output.out_lbl.text += f"[color={RED_HEX}][b]{line}[/b][/color]\n"
+            self.output.out_lbl.text += f"[color={RED_HEX}][b]{s}[/b][/color]{end}"
         else:
-            self.output.out_lbl.text += f"{line}\n"
+            self.output.out_lbl.text += f"{s}{end}"
+
 
     def cancel_action(self, *_):
         if self._running:
+            if self.proc:
+                try: self.proc.terminate()
+                except: pass
+                self.proc = None
             self._q.put(('done', -1))
-            self.output.out_lbl.text += "\n[color=ff0000]Cancelled[/color]\n"
+            self.output.out_lbl.text += "\n[color=ff0000]Cancelled (Note: background task may still be finishing)[/color]\n"
 
     def _show_model_info(self):
         self.output.out_lbl.text = ""
