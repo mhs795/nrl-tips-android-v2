@@ -12,8 +12,11 @@ def load_model(path):
     if not os.path.exists(path):
         return None
     # Load into memory buffer to bypass potential archive access issues
+    # and to prevent "seek of closed file" errors when file is closed by 'with' block.
+    import io
     with open(path, 'rb') as f:
-        return np.load(f, allow_pickle=True)
+        data = io.BytesIO(f.read())
+    return np.load(data, allow_pickle=True)
 
 def _sigmoid(x):
     return 1 / (1 + np.exp(-x))
