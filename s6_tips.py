@@ -900,8 +900,10 @@ def run_predictions(games_df: pd.DataFrame, use_odds: bool = True) -> pd.DataFra
     # when sklearn is unavailable (real Android device).
     if os.path.exists(pkl_path):
         try:
+            import io
             with open(pkl_path, "rb") as f:
-                model, feature_cols = pickle.load(f)
+                data = io.BytesIO(f.read())
+                model, feature_cols = pickle.load(data)
             df_feat = engineer_features(games_df)
             X       = df_feat.reindex(columns=feature_cols, fill_value=0).fillna(0)
             probs   = model.predict_proba(X)[:, 1]
